@@ -832,6 +832,11 @@ Domo compiled validation functions for the given struct based on the described t
 
 ## Changelog
 
+## v1.5.20
+
+* Fix a struct nested into the file of another module being lost from the build
+  when a struct it depends on changes
+
 ## v1.5.19
 
 * Improve compatibility with Elixir 1.19

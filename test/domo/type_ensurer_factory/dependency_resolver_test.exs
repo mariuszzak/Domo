@@ -353,6 +353,60 @@ defmodule Domo.TypeEnsurerFactory.DependencyResolverTest do
       assert_called ElixirTask.recompile_with_elixir(any())
     end
 
+    @tag deps: %{
+           Location =>
+             {@module_path1,
+              [
+                {CustomStruct, <<0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0>>, nil}
+              ]}
+         }
+    @tag touch_paths: [@module_path1, @module_path2]
+    test "delete BEAM of a module nested into the file of another module" do
+      allow ElixirTask.recompile_with_elixir(any()), return: {:ok, [], []}
+
+      ebin_path = write_beams_to_ebin()
+
+      DependencyResolver.maybe_recompile_depending_structs(@deps_path, @preconds_path, compile_path: ebin_path)
+
+      assert_called File.rm(Path.join(ebin_path, "Elixir.NestedBeamParent.Child.beam"))
+    end
+
+    @tag deps: %{
+           Location =>
+             {@module_path1,
+              [
+                {CustomStruct, <<0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0>>, nil}
+              ]}
+         }
+    @tag touch_paths: [@module_path1, @module_path2]
+    test "delete BEAM of the module the source is named after" do
+      allow ElixirTask.recompile_with_elixir(any()), return: {:ok, [], []}
+
+      ebin_path = write_beams_to_ebin()
+
+      DependencyResolver.maybe_recompile_depending_structs(@deps_path, @preconds_path, compile_path: ebin_path)
+
+      assert_called File.rm(Path.join(ebin_path, "Elixir.NestedBeamParent.beam"))
+    end
+
+    @tag deps: %{
+           Location =>
+             {@module_path1,
+              [
+                {CustomStruct, <<0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0>>, nil}
+              ]}
+         }
+    @tag touch_paths: [@module_path1, @module_path2]
+    test "keep BEAM of a module compiled from a source that is not to be recompiled" do
+      allow ElixirTask.recompile_with_elixir(any()), return: {:ok, [], []}
+
+      ebin_path = write_beams_to_ebin()
+
+      DependencyResolver.maybe_recompile_depending_structs(@deps_path, @preconds_path, compile_path: ebin_path)
+
+      refute_called(File.rm(Path.join(ebin_path, "Elixir.OtherSourceBeamModule.beam")))
+    end
+
     @tag deps: %{Location => {@module_path1, [{NonexistingModule1, <<0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0>>, nil}]}}
     test "return error if can't write deps file" do
       defmodule WriteFailingFile do
@@ -434,6 +488,35 @@ defmodule Domo.TypeEnsurerFactory.DependencyResolverTest do
 
       assert DependencyResolver.maybe_recompile_depending_structs(@deps_path, @preconds_path, []) ==
                {:ok, [:module], [:warn]}
+    end
+  end
+
+  defp write_beams_to_ebin do
+    ebin_path = Path.join(@source_dir, "ebin")
+    File.mkdir_p!(ebin_path)
+
+    write_beams(ebin_path, @module_path1, """
+    defmodule NestedBeamParent do
+      defmodule Child do
+        @type t :: atom()
+      end
+
+      @type t :: atom()
+    end
+    """)
+
+    write_beams(ebin_path, @module_path2, """
+    defmodule OtherSourceBeamModule do
+      @type t :: atom()
+    end
+    """)
+
+    ebin_path
+  end
+
+  defp write_beams(ebin_path, source_path, source_code) do
+    for {module, binary} <- Code.compile_string(source_code, source_path) do
+      File.write!(Path.join(ebin_path, "#{module}.beam"), binary)
     end
   end
 

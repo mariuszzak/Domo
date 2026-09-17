@@ -133,6 +133,9 @@ defmodule Domo.TypeEnsurerFactory.Generator.MatchFunRegistry.Lists do
     element_attributes = TypeSpec.match_spec_attributes(element_spec_precond)
     match_list_elements_quoted = match_el_quoted(type_spec_atom, element_attributes, element_attributes)
 
+    # length/1 tests properness, not size: is_list/1 would admit [1 | 2], which
+    # the case below has no clause for.
+    # credo:disable-for-next-line Credo.Check.Warning.ExpensiveEmptyEnumCheck
     guard_quoted = if can_be_empty?, do: quote(do: length(value) >= 0), else: quote(do: length(value) > 0)
 
     spec_string_var = if precond, do: quote(do: spec_string), else: quote(do: _spec_string)

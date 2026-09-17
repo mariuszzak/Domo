@@ -28,6 +28,8 @@ defmodule DomoTest do
       EctoPassenger,
       FruitBasket,
       Game,
+      Hangar,
+      Hangar.Bay,
       Leaf,
       LeafHolder,
       Library,
@@ -47,6 +49,7 @@ defmodule DomoTest do
       Receiver,
       ReceiverUserTypeAfterT,
       Shelf,
+      Tag,
       WebService
     ]
   )
@@ -823,6 +826,29 @@ a true value from the precondition.*defined for Account.t\(\) type./s, fn ->
                      seat = struct!(Airplane.Seat, id: "A2")
                      _ = Airplane.new!(seats: [seat])
                    end
+    end
+
+    test "keeps a struct nested into another module's file after its dependency changes" do
+      DomoMixTask.start_plan_collection([])
+      [_hangar_path, tag_path] = compile_hangar_with_nested_bay_and_tag()
+      assert {:ok, _} = DomoMixTask.process_plan({:ok, []}, [])
+
+      assert Code.ensure_loaded?(Hangar.Bay.TypeEnsurer)
+
+      File.rm!(tag_path)
+      :code.purge(Tag.TypeEnsurer)
+      :code.delete(Tag.TypeEnsurer)
+
+      DomoMixTask.start_plan_collection([])
+      compile_tag_with_atom_id()
+      assert {:ok, _} = DomoMixTask.process_plan({:ok, []}, [])
+
+      compile_path = Mix.Project.compile_path()
+
+      assert File.exists?(Path.join(compile_path, "Elixir.Hangar.Bay.beam"))
+      assert File.exists?(Path.join(compile_path, "Elixir.Hangar.Bay.TypeEnsurer.beam"))
+      assert Code.ensure_loaded?(Hangar.Bay)
+      assert Code.ensure_loaded?(Hangar.Bay.TypeEnsurer)
     end
 
     for {fun, correct_fun_call, wrong_fun_call} <- [
@@ -1952,6 +1978,57 @@ a true value from the precondition.*defined for Account.t\(\) type./s, fn ->
 
     CompilerHelpers.compile_with_elixir()
     [airplane_path, seat_path]
+  end
+
+  defp compile_hangar_with_nested_bay_and_tag do
+    tag_path = MixProject.out_of_project_tmp_path("/tag.ex")
+
+    File.write!(tag_path, """
+    defmodule Tag do
+      use Domo, skip_defaults: true
+
+      @enforce_keys [:id]
+      defstruct [:id]
+
+      @type t :: %__MODULE__{id: String.t()}
+    end
+    """)
+
+    hangar_path = MixProject.out_of_project_tmp_path("/hangar.ex")
+
+    File.write!(hangar_path, """
+    defmodule Hangar do
+      defmodule Bay do
+        use Domo, skip_defaults: true
+
+        @enforce_keys [:tag]
+        defstruct [:tag]
+
+        @type t :: %__MODULE__{tag: Tag.t()}
+      end
+    end
+    """)
+
+    CompilerHelpers.compile_with_elixir()
+    [hangar_path, tag_path]
+  end
+
+  defp compile_tag_with_atom_id do
+    tag_path = MixProject.out_of_project_tmp_path("/tag.ex")
+
+    File.write!(tag_path, """
+    defmodule Tag do
+      use Domo, skip_defaults: true
+
+      @enforce_keys [:id]
+      defstruct [:id]
+
+      @type t :: %__MODULE__{id: atom()}
+    end
+    """)
+
+    CompilerHelpers.compile_with_elixir()
+    [tag_path]
   end
 
   defp compile_seat_with_atom_id do

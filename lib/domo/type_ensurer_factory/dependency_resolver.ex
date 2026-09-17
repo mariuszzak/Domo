@@ -17,7 +17,7 @@ defmodule Domo.TypeEnsurerFactory.DependencyResolver do
          {:ok, updated_deps, type_hash_by_dependant_module} <- maybe_cleanup_and_write_deps(deps_path, deps, file_module),
          {:ok, updated_preconds} <- maybe_cleanup_preconds(preconds_path, preconds, file_module) do
       preconds_hash_by_module = get_precond_hashes(updated_preconds)
-      maybe_recompile(updated_deps, deps, type_hash_by_dependant_module, preconds_hash_by_module, opts[:verbose?] || false)
+      maybe_recompile(updated_deps, deps, type_hash_by_dependant_module, preconds_hash_by_module, opts)
     else
       {:error, {:read_deps, :enoent}} ->
         {:ok, []}
@@ -172,7 +172,7 @@ defmodule Domo.TypeEnsurerFactory.DependencyResolver do
     |> Enum.reverse()
   end
 
-  defp maybe_recompile(updated_deps, deps, type_hash_by_dependant_module, preconds_hash_by_module, verbose?) do
+  defp maybe_recompile(updated_deps, deps, type_hash_by_dependant_module, preconds_hash_by_module, opts) do
     {modules_to_recompile, sources_to_recompile} =
       updated_deps
       |> sources_with_changed_dependants_type_hash(type_hash_by_dependant_module)
@@ -184,14 +184,70 @@ defmodule Domo.TypeEnsurerFactory.DependencyResolver do
     if Enum.empty?(sources_to_recompile) do
       {:ok, []}
     else
-      beams_to_recompile =
-        Enum.map(modules_to_recompile, fn module ->
-          module |> :code.which() |> List.to_string()
-        end)
+      sources_to_recompile = Enum.uniq(sources_to_recompile)
+      beams_to_recompile = beams_compiled_from_sources(Enum.uniq(modules_to_recompile), sources_to_recompile, opts)
 
-      touch_and_recompile(Enum.uniq(sources_to_recompile), Enum.uniq(beams_to_recompile), verbose?)
+      touch_and_recompile(sources_to_recompile, beams_to_recompile, opts[:verbose?] || false)
     end
   end
+
+  # Elixir checks one module of a source to decide whether to rebuild it, see
+  # missing_beam_file?/2 in Mix.Compilers.Elixir. Removing the BEAM of a module
+  # nested into another module's file leaves that one in place, so the source is
+  # never rebuilt - hence removals are derived from sources, not from modules.
+  defp beams_compiled_from_sources(modules, sources, opts) do
+    module_beams = Enum.flat_map(modules, &module_beam_path/1)
+    sibling_beams = beams_with_source_in(sources, ebin_paths(module_beams, opts))
+
+    Enum.uniq(module_beams ++ sibling_beams)
+  end
+
+  defp module_beam_path(module) do
+    case :code.which(module) do
+      # in memory, preloaded, cover compiled or not found modules have no BEAM file
+      path when is_list(path) and path != [] -> [List.to_string(path)]
+      _no_beam_file -> []
+    end
+  end
+
+  defp ebin_paths(module_beams, opts) do
+    # Both callers run under the Mix compiler, so a project is always in scope.
+    compile_path = opts[:compile_path] || Mix.Project.compile_path()
+
+    [compile_path | Enum.map(module_beams, &Path.dirname/1)]
+    |> Enum.uniq()
+  end
+
+  defp beams_with_source_in(sources, ebin_paths) do
+    source_set = MapSet.new(sources, &Path.expand/1)
+
+    ebin_paths
+    |> Enum.flat_map(&beam_files_in/1)
+    |> Enum.filter(fn beam_path ->
+      source = beam_source(beam_path)
+      not is_nil(source) and MapSet.member?(source_set, source)
+    end)
+  end
+
+  defp beam_files_in(ebin_path) do
+    case File.ls(ebin_path) do
+      {:ok, entries} -> for entry <- entries, String.ends_with?(entry, ".beam"), do: Path.join(ebin_path, entry)
+      {:error, _reason} -> []
+    end
+  end
+
+  defp beam_source(beam_path) do
+    case :beam_lib.chunks(String.to_charlist(beam_path), [:compile_info]) do
+      {:ok, {_module, [compile_info: compile_info]}} -> compile_info |> compile_info_source() |> expand_source()
+      _error -> nil
+    end
+  end
+
+  defp compile_info_source(compile_info) when is_list(compile_info), do: Keyword.get(compile_info, :source)
+  defp compile_info_source(_compile_info), do: nil
+
+  defp expand_source(source) when is_list(source) and source != [], do: source |> List.to_string() |> Path.expand()
+  defp expand_source(_source), do: nil
 
   defp sources_with_changed_dependants_type_hash(deps, dependant_module_type_hashes) do
     Enum.reduce(deps, %{}, fn {module, {path, dependants}}, acc ->
